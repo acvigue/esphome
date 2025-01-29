@@ -7,49 +7,45 @@ namespace levoit {
 static const char *const TAG = "levoit.fan";
 
 void LevoitFan::setup() {
-  this->parent_->register_listener(LevoitPayloadType::STATUS_RESPONSE, [this](uint8_t *payloadData, size_t payloadLen) {
-    switch (this->parent_->device_model_) {
-      case LevoitDeviceModel::CORE_400S:
-        // in the 400s, there is no way to disable the fan, and leave the device on
-        // so the power state will represent the main power
+  uint32_t listenMask = this->parent_->fanChangeMask;
 
-        power = payloadData[4];
-        fanMode = payloadData[5];
-        reportedManualFanSpeed = payloadData[6];
-        currentFanSpeed = payloadData[7];
+  switch (this->parent_->device_model_) {
+    // represents power mode
+    case LevoitDeviceModel::CORE_400S:
+    case LevoitDeviceModel::CORE_200S:
+      powerMask |= (static_cast<uint32_t>(LevoitState::POWER) + static_cast<uint32_t>(LevoitState::FAN_MANUAL));
+      break;
+    default:
+      //represensts fan mode
+      powerMask |= static_cast<uint32_t>(LevoitState::FAN_MANUAL);
+  }
 
-        this->state = power == 0x01;
-        this->speed = reportedManualFanSpeed;
+  listenMask |= powerMask;
 
-        break;
-      case LevoitDeviceModel::CORE_200S:
-        //Core200s has no auto mode so only on fan speed
-        power = payloadData[4];
-        fanMode = payloadData[5];
-        reportedManualFanSpeed = payloadData[6];
-        currentFanSpeed = payloadData[6];
+  this->parent_->register_state_listener(listenMask,
+    [this](uint32_t currentBits) {
+      bool powerState = (currentBits & powerMask) == powerMask;
 
-        this->state = power == 0x01;
-        this->speed = reportedManualFanSpeed;
+      this->state = currentBits & powerState;
 
-        break;
+      uint8_t newSpeed;
 
-      default:
-        // original behavior for 300s; fan switch is being repurposed
-        // to represent auto mode on/off
+      if (currentBits & static_cast<uint32_t>(LevoitState::FAN_SPEED1))
+        newSpeed = 1;
+      else if (currentBits & static_cast<uint32_t>(LevoitState::FAN_SPEED2))
+        newSpeed = 2;
+      else if (currentBits & static_cast<uint32_t>(LevoitState::FAN_SPEED3))
+        newSpeed = 3;
+      else if (currentBits & static_cast<uint32_t>(LevoitState::FAN_SPEED4))
+        newSpeed = 4;
 
-        power = payloadData[4] == 0x01;
-        fanMode = payloadData[5];
-        reportedManualFanSpeed = payloadData[6];
-        currentFanSpeed = payloadData[9];
+      this->speed = newSpeed;
 
-        this->state = (fanMode == 0x00);
-        this->speed = reportedManualFanSpeed;
+      this->publish_state();
     }
-
-    this->publish_state();
-  });
+  );
 }
+
 
 void LevoitFan::dump_config() { LOG_FAN("", "Levoit Fan", this); }
 
@@ -66,33 +62,30 @@ fan::FanTraits LevoitFan::get_traits() {
 
 void LevoitFan::control(const fan::FanCall &call) {
   bool newPowerState = this->state;
+  uint32_t onMask = 0;
+  uint32_t offMask = 0;
 
   if (call.get_state().has_value()) {
     newPowerState = *call.get_state();
-
+    
     switch (this->parent_->device_model_) {
       case LevoitDeviceModel::CORE_400S:
-        // fan switch controls main power state
-        this->parent_->send_command(LevoitCommand{.payloadType = LevoitPayloadType::SET_POWER_STATE,
-                                                  .packetType = LevoitPacketType::SEND_MESSAGE,
-                                                  .payload = {0x00, newPowerState}});
-        break;
       case LevoitDeviceModel::CORE_200S:
-        // fan switch controls main power state
-        this->parent_->send_command(LevoitCommand{.payloadType = LevoitPayloadType::SET_POWER_STATE,
-                                                  .packetType = LevoitPacketType::SEND_MESSAGE,
-                                                  .payload = {0x00, newPowerState}});
+        if (newPowerState) {
+          onMask |= static_cast<uint32_t>(LevoitState::POWER) + static_cast<uint32_t>(LevoitState::FAN_MANUAL);
+          offMask &= ~static_cast<uint32_t>(LevoitState::POWER);
+        } else {
+          onMask &= ~static_cast<uint32_t>(LevoitState::POWER);
+          offMask |= static_cast<uint32_t>(LevoitState::POWER);
+        }
         break;
       default:
-        // fan switch controls auto mode
-        if (newPowerState == true) {
-          this->parent_->send_command(LevoitCommand{.payloadType = LevoitPayloadType::SET_FAN_MODE,
-                                                    .packetType = LevoitPacketType::SEND_MESSAGE,
-                                                    .payload = {0x00, 0x00}});
+        if (newPowerState) {
+          onMask |= static_cast<uint32_t>(LevoitState::FAN_MANUAL);
+          offMask &= ~static_cast<uint32_t>(LevoitState::FAN_MANUAL);
         } else {
-          this->parent_->send_command(LevoitCommand{.payloadType = LevoitPayloadType::SET_FAN_MODE,
-                                                    .packetType = LevoitPacketType::SEND_MESSAGE,
-                                                    .payload = {0x00, 0x02}});
+          onMask &= ~static_cast<uint32_t>(LevoitState::FAN_MANUAL);
+          offMask |= static_cast<uint32_t>(LevoitState::FAN_MANUAL);
         }
     }
   }
@@ -100,24 +93,54 @@ void LevoitFan::control(const fan::FanCall &call) {
   if (call.get_speed().has_value()) {
     uint8_t targetSpeed = *call.get_speed();
 
-    // 400s-specific behavior
-    if (this->parent_->device_model_ == LevoitDeviceModel::CORE_400S) {
-      // if fan is off, we don't set speed
-      if (newPowerState == false) {
-        return;
-      }
-
-      if (targetSpeed == 0) {
-        // fan speed can report as 0-speed (auto mode), but setting to 0-speed results in error
-        // set to 1 instead
-        targetSpeed = 1;
-      }
+    switch (targetSpeed) {
+      case 0:
+        // send power off
+        onMask &= ~static_cast<uint32_t>(LevoitState::POWER);
+        offMask |= static_cast<uint32_t>(LevoitState::POWER);
+        break;
+      case 1:
+        onMask |= static_cast<uint32_t>(LevoitState::FAN_SPEED1) + static_cast<uint32_t>(LevoitState::FAN_MANUAL);
+        offMask &= ~(
+          static_cast<uint32_t>(LevoitState::FAN_SPEED2) +
+          static_cast<uint32_t>(LevoitState::FAN_SPEED3) +
+          static_cast<uint32_t>(LevoitState::FAN_SPEED4)
+        );
+        break;
+      case 2:
+        onMask |= static_cast<uint32_t>(LevoitState::FAN_SPEED2) + static_cast<uint32_t>(LevoitState::FAN_MANUAL);
+        offMask &= ~(
+          static_cast<uint32_t>(LevoitState::FAN_SPEED1) +
+          static_cast<uint32_t>(LevoitState::FAN_SPEED3) +
+          static_cast<uint32_t>(LevoitState::FAN_SPEED4)
+        );
+        break;
+      case 3:
+        onMask |= static_cast<uint32_t>(LevoitState::FAN_SPEED3) + static_cast<uint32_t>(LevoitState::FAN_MANUAL);
+        offMask &= ~(
+          static_cast<uint32_t>(LevoitState::FAN_SPEED1) +
+          static_cast<uint32_t>(LevoitState::FAN_SPEED2) +
+          static_cast<uint32_t>(LevoitState::FAN_SPEED4)
+        );
+        break;
+      case 4:
+        onMask |= static_cast<uint32_t>(LevoitState::FAN_SPEED4) + static_cast<uint32_t>(LevoitState::FAN_MANUAL);;
+        offMask &= ~(
+          static_cast<uint32_t>(LevoitState::FAN_SPEED1) +
+          static_cast<uint32_t>(LevoitState::FAN_SPEED2) +
+          static_cast<uint32_t>(LevoitState::FAN_SPEED3)
+        );
+        break;
     }
-
-    this->parent_->send_command(LevoitCommand{.payloadType = LevoitPayloadType::SET_FAN_MANUAL,
-                                              .packetType = LevoitPacketType::SEND_MESSAGE,
-                                              .payload = {0x00, 0x00, 0x01, targetSpeed}});
   }
+
+  if (onMask || offMask) {
+    // when going from off to fan speed, don't send on
+    if (onMask & static_cast<uint32_t>(LevoitState::POWER) && onMask & this->parent_->fanChangeMask)
+      onMask &= ~static_cast<uint32_t>(LevoitState::POWER);
+    this->parent_->set_request_state(onMask, offMask);
+  }
+    
 }
 
 }  // namespace levoit

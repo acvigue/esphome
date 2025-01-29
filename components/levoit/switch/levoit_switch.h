@@ -17,6 +17,7 @@ class LevoitSwitch : public switch_::Switch, public Component {
 
  protected:
   void write_state(bool state) override;
+  uint32_t get_mask_(LevoitSwitchPurpose purpose);
 
   Levoit *parent_;
   LevoitSwitchPurpose purpose_;

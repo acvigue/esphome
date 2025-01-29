@@ -7,17 +7,37 @@ namespace levoit {
 static const char *const TAG = "levoit.sensor";
 
 void LevoitSensor::setup() {
-  this->parent_->register_listener(LevoitPayloadType::STATUS_RESPONSE, [this](uint8_t *payloadData, size_t payloadLen) {
-    if (this->purpose_ == LevoitSensorPurpose::PM25) {
-      if (payloadData[12] == 0xFF && payloadData[13] == 0xFF) {
-        this->publish_state(NAN);
-      } else {
-        this->publish_state((float) ((payloadData[13] << 8) + payloadData[12]) / 1.0);
-      }
-    } else if (this->purpose_ == LevoitSensorPurpose::AIR_QUALITY) {
-      this->publish_state(payloadData[11]);
-    }
-  });
+  switch (this->purpose_) {
+    case LevoitSensorPurpose::AIR_QUALITY:
+      this->parent_->register_state_listener(
+        static_cast<uint32_t>(LevoitState::AIR_QUALITY_CHANGE),
+        [this](uint32_t currentBits) {
+          this->publish_state(this->parent_->air_quality);
+          this->parent_->set_request_state(0, static_cast<uint32_t>(LevoitState::AIR_QUALITY_CHANGE), false);
+        }
+      );
+      break;
+    case LevoitSensorPurpose::PM25:
+      this->parent_->register_state_listener(
+        static_cast<uint32_t>(LevoitState::PM25_CHANGE) +
+        static_cast<uint32_t>(LevoitState::PM25_NAN),
+        [this](uint32_t currentBits) {
+          if (currentBits & static_cast<uint32_t>(LevoitState::PM25_NAN)) {
+            this->publish_state(NAN);
+            this->parent_->set_request_state(0, static_cast<uint32_t>(LevoitState::PM25_NAN), false);
+          } else {
+            uint16_t integer_part = this->parent_->pm25_value / 10;
+            uint16_t decimal_part = this->parent_->pm25_value % 10;
+            float pm25Publish = integer_part + (decimal_part / 10.0);
+
+            this->publish_state(pm25Publish);
+            this->parent_->set_request_state(0, static_cast<uint32_t>(LevoitState::PM25_CHANGE), false);
+          }
+        }
+      );
+      break;
+  }
+
 }
 
 void LevoitSensor::dump_config() { LOG_SENSOR("", "Levoit Sensor", this); }

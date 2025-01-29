@@ -22,8 +22,8 @@ api:
     key: "..."
 
 ota:
-  platform: esphome
-  password: "..."
+  - platform: esphome
+    password: "..."
 
 wifi:
   networks:
@@ -43,20 +43,24 @@ uart:
 
 levoit:
   id: levoit1
+#  model: core300s  # default core300s
+#  command_delay: 300 # default 300
+#  command_timeout: 200 # default 200
+#  status_poll_seconds: 0 # default 0, not needed if you get auto status msgs
 
 fan:
   - platform: levoit
     name: Levoit Purifier
 
-sensor:
-  # Uptime sensor.
-  - platform: uptime
-    name: Uptime
+#sensor:
+#   Uptime sensor.
+#  - platform: uptime
+#    name: Uptime
 
-  # WiFi Signal sensor.
-  - platform: wifi_signal
-    name: WiFi Signal
-    update_interval: 60s
+# WiFi Signal sensor.
+#  - platform: wifi_signal
+#    name: WiFi Signal
+#    update_interval: 60s
 
   # PM2.5 sensor
   - platform: levoit
@@ -73,6 +77,11 @@ switch:
       name: "Display On"
     power:
       name: "Master Power"
+
+button:
+  - platform: levoit
+    filter_reset:
+      name: "Filter Reset"
 
 select:
   - platform: levoit

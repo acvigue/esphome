@@ -22,7 +22,8 @@ api:
     key: "..."
 
 ota:
-  password: "..."
+  - platform: esphome
+    password: "..."
 
 wifi:
   networks:
@@ -43,15 +44,18 @@ uart:
 levoit:
   id: levoit1
   model: core200s
+#  command_delay: 300 # default 300
+#  command_timeout: 200 # default 200
+#  status_poll_seconds: 0 # default 0, not needed if you get auto status msgs
 
 fan:
   - platform: levoit
     name: Levoit Purifier
 
-sensor:
-  # Uptime sensor.
-  - platform: uptime
-    name: Uptime
+#sensor:
+#   Uptime sensor.
+#  - platform: uptime
+#    name: Uptime
 
 #   WiFi Signal sensor.
 #  - platform: wifi_signal
@@ -68,9 +72,21 @@ switch:
     power:
       name: "Master Power"
 
+button:
+  - platform: levoit
+    filter_reset:
+      name: "Filter Reset"
+
 select:
   - platform: levoit
     fan_mode:
       name: "Fan Mode"
     nightlight_mode:
       name: "Nightlight Mode"
+
+sensor:
+  - platform: levoit
+    pm_2_5:
+      name: PM2.5
+    air_quality:
+      name: Air Quality Index      
